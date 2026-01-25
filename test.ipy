@@ -1,0 +1,13 @@
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from langgraph.checkpoint.postgres import PostgresSaver
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    with PostgresSaver.from_conn_string(DB_URL) as checkpointer:
+        app.state.graph = builder.compile(checkpointer=checkpointer)
+        yield
+
+app = FastAPI(lifespan=lifespan)
+
+# can you explain me this code

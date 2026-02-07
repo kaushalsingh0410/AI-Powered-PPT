@@ -15,7 +15,7 @@ import os
 
 load_dotenv()
 
-model = ChatAI21(model = 'jamba-mini-1.7-2025-07')
+model = ChatAI21(model = 'jamba-mini-2-2026-01')
 searchTool = TavilySearchResults(max_results=3)
 tools = [searchTool]
 model_with_tools = model.bind_tools(tools)
@@ -33,6 +33,7 @@ class PptState(TypedDict):
         # "continue_next",
         "update_outline",
         "update_slide",
+        "complete",
         ''
     ]
     tool_caller: Literal[
@@ -171,9 +172,9 @@ def generate_slide_detail_node(state: PptState):
     total_slides = len(state.get('outline',{}).get('slides',[]))
     # if current_index > state['num_slides']:
     #     return
-    if current_index > total_slides:
+    if current_index >= total_slides:
         # return
-        return {"action": "end"}
+        return {"action": "complete"}
     
     output = {
         "tool_caller": "generate_slide_detail",
@@ -274,6 +275,8 @@ def route_after_human(state: PptState):
 
     elif action in ('continue_slide', 'update_slide'):
         return "generate_slide_detail"
+    elif action == 'complete':  
+        return END
     return END
 
 DB_URL = os.getenv("ppt_url")

@@ -8,17 +8,43 @@ from langgraph.prebuilt import ToolNode,tools_condition
 from typing import TypedDict,Annotated, List, Dict, Literal
 from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg_pool import ConnectionPool
-
+from pydantic import BaseModel
+from typing import List
 from dotenv import load_dotenv
 import json
 import os
 
 load_dotenv()
 
+
+class DetailedPoint(BaseModel):
+    key_point: str
+    example: str
+
+class DetailedSlideOutput(BaseModel):
+    slide_number: int
+    slide_title: str
+    detailed_content: List[DetailedPoint]
+
+
+class OutlineOutput(BaseModel):
+    title: str
+    total_slides: int
+    slides: List[DetailedSlideOutput]
+
+
 model = ChatAI21(model = 'jamba-mini-2-2026-01')
 searchTool = TavilySearchResults(max_results=3)
 tools = [searchTool]
-model_with_tools = model.bind_tools(tools)
+# model_with_tools = model.bind_tools(tools)
+
+
+
+
+models_with_outline = model.bind_tools(tools).with_structured_output(OutlineOutput)
+models_with_detailed = model.bind_tools(tools).with_structured_output(DetailedSlideOutput)
+# structured_detail_model = model.with_structured_output()
+
 
 
 
@@ -43,7 +69,7 @@ class PptState(TypedDict):
     ]
 
 
-OUTLINE_SYSTEM_PORMPT = SystemMessage(
+OUTLINE_SYSTEM_PROMPT = SystemMessage(
     content="""
 You are an expert presentation designer and content strategist.
 
@@ -52,12 +78,12 @@ Your task: Create a STRUCTURED OUTLINE for a PowerPoint presentation.
 Output format (JSON):
 {
     "title":"Main presentation title",
-    "totle_slides": number,
+    "total_slides": number,
     "slides":[
         { 
             "slide_number":1,
             "slide_title": "Title of the slide"
-            "key_points": ["Point 1","Point 2","Point 3"]
+            "key_points": ["Point 1","Point 2","Point 3",...]
             "content_type": "introduction/explanation/comparison/conclusion"
         }
     ]
@@ -136,12 +162,10 @@ def json_to_python(fixed_text):
 
 def generate_outline_node(state: PptState):
     """Step 1: Generate presentation outline"""
-
     print('inside generate_outline_node')
-    messages = state["messages"] + [OUTLINE_SYSTEM_PORMPT]
-    result = model_with_tools.invoke(messages)
+    messages = state["messages"] + [OUTLINE_SYSTEM_PROMPT]
+    result = models_with_outline.invoke(messages)
     print('result',result)
-    
     output = {
         'messages':[result],
         'current_slide_index':0,
@@ -150,22 +174,52 @@ def generate_outline_node(state: PptState):
 
     if result.content:
         try:
-            outline = json_to_python(result.content)
-            outline = json.loads(outline)
+            # outline = json_to_python(result.content)
+            # outline = json.loads(outline)
+            outline = result.model_dump()
         except json.JSONDecodeError as e:
-            try:
-                outline = json.loads(is_valid_brackets(outline))
-                print('outline 3',outline)
-            except json.JSONDecodeError as e:
-                print('generate_outline_node',e)
+            # try:
+            #     outline = json.loads(is_valid_brackets(outline))
+            #     print('outline 3',outline)
+            # except json.JSONDecodeError as e:
+            #     print('generate_outline_node',e)
+            print('generate_outline_node',e)
+            # print(result.content)
         output['outline'] = outline
         
-    print("state before ",state)
+    # print("state before ",state)
     return output
+
+
+# def generate_outline_node(state: PptState):
+#     """Step 1: Generate presentation outline"""
+
+#     messages = state["messages"] + [OUTLINE_SYSTEM_PROMPT]
+
+#     # Step 1: allow tool usage
+#     tool_response = model_with_tools.invoke(messages)
+
+#     # If model called tool → let LangGraph route
+#     if tool_response.tool_calls:
+#         return {
+#             "messages": [tool_response],
+#             "tool_caller": "generate_outline"
+#         }
+
+#     # Step 2: After tools resolved → enforce structure
+#     structured_result = structured_outline_model.invoke(messages)
+
+#     return {
+#         "outline": structured_result.model_dump(),
+#         "current_slide_index": 0,
+#         "tool_caller": "generate_outline"
+#     }
 
 
 def generate_slide_detail_node(state: PptState):
     """Step 2: Generate detailed content for current Slide"""
+
+    print('inside generate_slide_detail_node')
 
     outline = state['outline']
     current_index = state['current_slide_index']
@@ -174,7 +228,7 @@ def generate_slide_detail_node(state: PptState):
     # if current_index > state['num_slides']:
     #     return
     if current_index >= total_slides:
-        # return
+        print('inside complete return')
         return {"action": "complete"}
     
     output = {
@@ -220,22 +274,24 @@ Provide comprehensive, presentation-ready content."""
     )
 
     messages = [DETAIL_SYSTEM_PROMPT,prompt]
-    result = model_with_tools.invoke(messages)
-    # print('result.content',result.content)
+    result = models_with_detailed.invoke(messages)
+    print('result.content',result)
 
     try:
         # print('inside first try')
-        detailed_slide = json_to_python(result.content)
-        detailed_slide = json.loads(detailed_slide)
+        # detailed_slide = json_to_python(result.content)
+        # detailed_slide = json.loads(detailed_slide)
+        detailed_slide = result.model_dump()
         
     except json.JSONDecodeError as e:
         # print('before is_valid_brackets',detailed_slide)
         # print('after is_valid_brackets',is_valid_brackets(detailed_slide))
-        try:
-            detailed_slide = json.loads(is_valid_brackets(detailed_slide))
-        except json.JSONDecodeError as e:
-            print('generate_slide_detail_node inside',e)
-            detailed_slide = is_valid_brackets(detailed_slide)
+        # try:
+        #     detailed_slide = json.loads(is_valid_brackets(detailed_slide))
+        # except json.JSONDecodeError as e:
+        #     print('generate_slide_detail_node inside',e)
+        #     detailed_slide = is_valid_brackets(detailed_slide)
+        print('generate_slide_detail_node inside',e)
             
     detailed_slides.append(detailed_slide)
     output['messages'] = [result]
@@ -253,18 +309,22 @@ def human_decision(state: PptState):
     decision = interrupt({})
     print('inside human_decision')
     print('decision',decision)
-    print('state',state)
+    # print('state',state)
 
     if decision['action'] == "update_outline":
+        print('inside human_decision update_outline')
+
         return {
             'action': "update_outline",
             "messages":[decision['feedback']]
             }
         
     elif decision['action'] == 'continue_slide':
+        print('inside human_decision continue_slide')
         return {'action':'continue_slide'}
     
     elif decision['action'] == 'update_slide':
+        print('inside human_decision update_slide')
         return {'action':'update_slide'}
     
 
@@ -353,6 +413,8 @@ def build_workflow():
 
 
 def create_ckeckpointer_and_graph(db_url: str):
+    # print('inside create_ckeckpointer_and_graph')
+    # print('db_url',db_url)
 
     if not db_url:
         raise ValueError('Database Url environment variable not set')
@@ -372,5 +434,6 @@ def create_ckeckpointer_and_graph(db_url: str):
     checkpointer.setup()
     workflow = build_workflow()
     graph = workflow.compile(checkpointer=checkpointer)
+    # print('return checkpointer, graph',checkpointer, graph)
     
     return checkpointer, graph

@@ -1,357 +1,191 @@
-from langchain_ai21.chat_models import ChatAI21
-from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain_core.messages import SystemMessage, BaseMessage, HumanMessage, AIMessage
-from langgraph.types import interrupt, Command 
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode, tools_condition
-from typing import TypedDict, Annotated, List, Dict, Literal
-from langgraph.checkpoint.postgres import PostgresSaver
-from psycopg_pool import ConnectionPool
-
-from dotenv import load_dotenv
+import streamlit as st
+import uuid
+import requests
+from datetime import datetime
 import json
-import os
 
-load_dotenv()
+# Backend API config
+BACKEND_URL = "http://localhost:8000"  # Update if needed
 
-# Initialize model and tools (global - created once)
-model = ChatAI21(model='jamba-mini-2-2026-01')
-searchTool = TavilySearchResults(max_results=3)
-tools = [searchTool]
-model_with_tools = model.bind_tools(tools)
+st.set_page_config(page_title="Ritey PPT", layout="wide")
 
-# ============ STATE DEFINITION ============
-class PptState(TypedDict):
-    messages: Annotated[List[BaseMessage], add_messages]
-    outline: Dict
-    detailed_slides: List[Dict]
-    current_slide_index: int
-    feedback: str
-    topic: str
-    action: Literal[
-        "continue_slide",
-        "update_outline",
-        "update_slide",
-        "complete",
-        ''
-    ]
-    tool_caller: Literal[
-        "generate_outline",
-        "generate_slide_detail"
-    ]
+# Initialize minimal session state (only UI flags)
+if "current_thread_id" not in st.session_state:
+    st.session_state.current_thread_id = None
+if "show_form" not in st.session_state:
+    st.session_state.show_form = False
 
-# ============ SYSTEM PROMPTS ============
-OUTLINE_SYSTEM_PROMPT = SystemMessage(
-    content="""
-You are an expert presentation designer and content strategist.
-
-Your task: Create a STRUCTURED OUTLINE for a PowerPoint presentation.
-
-Output format (JSON):
-{
-    "title":"Main presentation title",
-    "total_slides": number,
-    "slides":[
-        { 
-            "slide_number":1,
-            "slide_title": "Title of the slide",
-            "key_points": ["Point 1","Point 2","Point 3"],
-            "content_type": "introduction/explanation/comparison/conclusion"
-        }
-    ]
-}
-
-Rules:
-- Create a logical flow from introduction to conclusion
-- Each slide should have 3-5 key points
-- Be specific about what each slide will cover
-- Ensure comprehensive coverage of the topic
-- Use tools to research if needed for accuracy
-- Return ONLY valid JSON, no additional text
-"""
-)
-
-DETAIL_SYSTEM_PROMPT = SystemMessage(
-    content="""
-You are an expert content writer for presentations.
-
-Your task: Generate DETAILED, ENGAGING content for a specific slide.
-
-For each key point:
-- Provide 2-3 sentences of explanation
-- Include relevant examples, statistics, or facts
-- Make it clear, concise, and presentation-ready
-- Use simple language that's easy to understand
-
-Output format:
-{
-    "slide_number": number,
-    "slide_title": "Title",
-    "detailed_content": [
-        {
-            "key_point": "point",
-            "explanation": "detailed explanation"
-        }
-    ]
-}
-"""
-)
-
-# ============ UTILITY FUNCTIONS ============
-def is_valid_brackets(s: str):
-    if s == '':
-        return
-    stack = []
-    bracket_map = {
-        '(': ')',
-        '{': '}',
-        '[': ']',
-    }
-
-    if s[0] != '{':
-        s = '{' + s
-
-    for char in s:
-        if char in bracket_map:
-            stack.append(char)
-        elif char in bracket_map.values():
-            stack.pop()
-
-    if s[-1] not in ['"', ']', '}']:
-        s = s + '"'
-    for char in stack[::-1]:
-        s += bracket_map[char]
-    return s
-
-def json_to_python(fixed_text):
-    if "```json" in fixed_text:
-        fixed_text = fixed_text.replace("```json", "").replace("```", "").strip()
-    elif "```" in fixed_text:
-        fixed_text = fixed_text.replace("```", "").strip()
-    return fixed_text
-
-# ============ NODE FUNCTIONS ============
-def generate_outline_node(state: PptState):
-    """Step 1: Generate presentation outline"""
-    print('inside generate_outline_node')
-    messages = state["messages"] + [OUTLINE_SYSTEM_PROMPT]
-    result = model_with_tools.invoke(messages)
-    print('result', result)
-    
-    output = {
-        'messages': [result],
-        'current_slide_index': 0,
-        "tool_caller": "generate_outline",
-    }
-
-    if result.content:
-        try:
-            outline = json_to_python(result.content)
-            outline = json.loads(outline)
-        except json.JSONDecodeError as e:
-            try:
-                outline = json.loads(is_valid_brackets(outline))
-                print('outline fixed', outline)
-            except json.JSONDecodeError as e:
-                print('generate_outline_node error', e)
-        output['outline'] = outline
-
-    print("state before", state)
-    return output
-
-def generate_slide_detail_node(state: PptState):
-    """Step 2: Generate detailed content for current slide"""
-    outline = state['outline']
-    current_index = state['current_slide_index']
-    detailed_slides = state.get('detailed_slides', [])
-    total_slides = len(state.get('outline', {}).get('slides', []))
-
-    if current_index >= total_slides:
-        return {"action": "complete"}
-    
-    output = {
-        "tool_caller": "generate_slide_detail",
-    }
-
-    if state['action'] == "update_slide":
-        feedback = state['action']
-        last_slide = detailed_slides.pop()
-        last_outline = outline['slides'][current_index - 1]
-        output['feedback'] = ''
-        output['action'] = ''
-
-        prompt = HumanMessage(
-            content=f"""
-You are updating a single slide in a PowerPoint presentation.
-Presentation Title: {state['outline']['title']}
-
-Outline of the slide: {last_outline}
-
-Current Slide Content: {last_slide}
-
-User Feedback: {feedback}
-"""
-        )
-    else:
-        print('current_index', current_index)
-        current_slide = outline['slides'][int(current_index)]
-        output['current_slide_index'] = current_index + 1
-        print('output', output)
-
-        prompt = HumanMessage(
-            content=f"""Generate detailed content for this slide:
-Slide Number: {current_slide['slide_title']}
-Key Points: {', '.join(current_slide['key_points'])}
-Content Type: {current_slide['content_type']}
-
-Provide comprehensive, presentation-ready content."""
-        )
-
-    messages = [DETAIL_SYSTEM_PROMPT, prompt]
-    result = model_with_tools.invoke(messages)
-
+# ============ API FUNCTIONS ============
+def get_sessions_from_backend():
+    """Fetch all user sessions from backend checkpointer"""
     try:
-        detailed_slide = json_to_python(result.content)
-        detailed_slide = json.loads(detailed_slide)
-    except json.JSONDecodeError as e:
-        try:
-            detailed_slide = json.loads(is_valid_brackets(detailed_slide))
-        except json.JSONDecodeError as e:
-            print('generate_slide_detail_node error', e)
-            detailed_slide = is_valid_brackets(detailed_slide)
+        response = requests.get(f"{BACKEND_URL}/sessions")
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except:
+        return []
 
-    detailed_slides.append(detailed_slide)
-    output['messages'] = [result]
-    output['detailed_slides'] = detailed_slides
-    print('output', output)
+def create_session(topic, num_slides):
+    """Create new session via backend"""
+    thread_id = str(uuid.uuid4())
+    try:
+        response = requests.post(f"{BACKEND_URL}/", json={
+            "topic": topic,
+            "num_slide": num_slides,
+            "thread_id": thread_id
+        })
+        if response.status_code == 200:
+            return {
+                "id": thread_id,
+                "topic": topic,
+                "num_slides": num_slides,
+                "created_at": datetime.now().strftime("%b %d, %H:%M"),
+                "status": "outline_generated",
+                "outline": response.json()
+            }
+    except:
+        pass
+    return None
 
-    return output
+def get_session_state(thread_id):
+    """Get full session state from backend"""
+    try:
+        response = requests.post(f"{BACKEND_URL}/ppt", json={"thread_id": thread_id})
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "outline": data.get("outline"),
+                "detailed_slides": data.get("detailed_slides", []),
+                "status": "slides_complete" if data.get("detailed_slides") else "outline_generated"
+            }
+    except:
+        pass
+    return None
 
-def route_after_tools(state: PptState):
-    return state["tool_caller"]
-
-def human_decision(state: PptState):
-    decision = interrupt({})
-    print('inside human_decision')
-    print('decision', decision)
-    print('state', state)
-
-    if decision['action'] == "update_outline":
-        return {
-            'action': "update_outline",
-            "messages": [decision['feedback']]
-        }
-    elif decision['action'] == 'continue_slide':
-        return {'action': 'continue_slide'}
-    elif decision['action'] == 'update_slide':
-        return {'action': 'update_slide'}
-
-def route_after_human(state: PptState):
-    action = state['action']
-    if action == 'update_outline':
-        return "generate_outline"
-    elif action in ('continue_slide', 'update_slide'):
-        return "generate_slide_detail"
-    elif action == 'complete':  
-        return END
-    return END
-
-# ============ GRAPH BUILDER ============
-def build_workflow():
-    """Build the workflow graph (can be called multiple times)."""
-    workflow = StateGraph(PptState)
+# ============ SIDEBAR ============
+with st.sidebar:
+    st.markdown("### 📋 Activity")
     
-    # Add nodes
-    workflow.add_node("generate_outline", generate_outline_node)
-    workflow.add_node("generate_slide_detail", generate_slide_detail_node)
-    workflow.add_node("human_decision", human_decision)
-    workflow.add_node("tools", ToolNode(tools))
-
-    # Start
-    workflow.add_edge(START, "generate_outline")
-
-    # Outline → tools OR human
-    workflow.add_conditional_edges(
-        "generate_outline",
-        tools_condition,
-        {
-            "tools": "tools",
-            "__end__": "human_decision",
-        },
-    )
-
-    # Slide → tools OR human
-    workflow.add_conditional_edges(
-        "generate_slide_detail",
-        tools_condition,
-        {
-            "tools": "tools",
-            "__end__": "human_decision",
-        },
-    )
-
-    # Tools → SAME caller
-    workflow.add_conditional_edges(
-        "tools",
-        route_after_tools,
-        {
-            "generate_outline": "generate_outline",
-            "generate_slide_detail": "generate_slide_detail",
-        },
-    )
-
-    # Human decides next
-    workflow.add_conditional_edges(
-        "human_decision",
-        route_after_human,
-        {
-            "generate_outline": "generate_outline",
-            "generate_slide_detail": "generate_slide_detail",
-            END: END,
-        },
-    )
-
-    return workflow
-
-# ============ CHECKPOINTER FACTORY ============
-def create_checkpointer_and_graph(db_url: str):
-    """
-    Factory function - creates PostgreSQL checkpointer and compiled graph.
-    Called ONCE on FastAPI startup.
+    # New PPT Button
+    if st.button("✨ New PPT", use_container_width=True):
+        st.session_state.show_form = True
+        st.rerun()
     
-    Args:
-        db_url: PostgreSQL connection string
+    st.divider()
+    
+    # Load sessions from BACKEND (persistent!)
+    sessions = get_sessions_from_backend()
+    
+    if sessions:
+        st.markdown("**Recent Sessions**")
+        for session in sessions:
+            col1, col2 = st.columns([0.85, 0.15])
+            
+            with col1:
+                if st.button(
+                    f"📌 {session['topic'][:25]}...",
+                    key=f"session_{session['id']}",
+                    use_container_width=True
+                ):
+                    st.session_state.current_thread_id = session['id']
+                    st.session_state.show_form = False
+                    st.rerun()
+                
+                st.caption(f"🔹 {session['num_slides']} slides • {session.get('created_at', 'Just now')}")
+            
+            with col2:
+                if st.button("🗑️", key=f"delete_{session['id']}"):
+                    # TODO: Add DELETE /sessions/{thread_id} endpoint
+                    st.rerun()
+    else:
+        st.info("📭 No sessions yet. Create your first PPT!")
+
+# ============ MAIN CONTENT ============
+if st.session_state.show_form:
+    st.title("🎨 Create New Presentation")
+    
+    with st.form("ppt_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            topic = st.text_input("📝 Topic", placeholder="e.g., AI in Healthcare")
+        with col2:
+            num_slides = st.number_input("🔢 Slides", min_value=3, max_value=20, value=5)
         
-    Returns:
-        tuple: (checkpointer, compiled_graph)
-    """
-    if not db_url:
-        raise ValueError("DATABASE_URL environment variable not set")
+        if st.form_submit_button("✅ Generate Outline"):
+            if topic:
+                with st.spinner("🚀 Creating presentation..."):
+                    session = create_session(topic, num_slides)
+                    if session:
+                        st.session_state.current_thread_id = session['id']
+                        st.session_state.show_form = False
+                        st.success(f"✨ Outline generated! Thread ID: `{session['id'][:8]}...`")
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to connect to backend")
+
+elif st.session_state.current_thread_id:
+    # Load session state from backend
+    session_state = get_session_state(st.session_state.current_thread_id)
     
-    connection_kwargs = {
-        "autocommit": True,
-        "prepare_threshold": 0,
-    }
-
-    # Create connection pool
-    pool = ConnectionPool(
-        conninfo=db_url,
-        max_size=20,
-        min_size=5,
-        kwargs=connection_kwargs,
-    )
-
-    # Create checkpointer
-    checkpointer = PostgresSaver(pool)
-    checkpointer.setup()  # Create tables if needed
+    # Session header
+    st.title(f"🎯 {session_state.get('outline', {}).get('title', 'Loading...')}")
     
-    print(f"✓ PostgreSQL checkpointer initialized with DB: {db_url.split('@')[-1]}")
-
-    # Build and compile workflow
-    workflow = build_workflow()
-    graph = workflow.compile(checkpointer=checkpointer)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Slides", len(session_state.get('detailed_slides', [])))
+    col2.metric("Thread ID", st.session_state.current_thread_id[:8] + "...")
+    col3.metric("Status", session_state.get('status', 'loading'))
     
-    print("✓ LangGraph compiled with PostgreSQL persistence")
+    st.divider()
+    
+    # Workflow tabs
+    tab1, tab2, tab3 = st.tabs(["📊 Outline", "🎨 Slides", "📥 Download"])
+    
+    with tab1:
+        if session_state.get('outline'):
+            st.json(session_state['outline'])
+        else:
+            st.warning("No outline found")
+    
+    with tab2:
+        slides = session_state.get('detailed_slides', [])
+        if slides:
+            for i, slide in enumerate(slides):
+                with st.expander(f"Slide {i+1}: {slide.get('slide_title', 'Untitled')}"):
+                    st.json(slide)
+                    
+                    # Feedback buttons
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        feedback = st.text_input("Feedback:", key=f"feedback_{i}")
+                        if st.button("✏️ Update Slide", key=f"update_{i}"):
+                            # TODO: POST feedback to backend
+                            st.info("Updating slide...")
+                    with col2:
+                        if st.button("✅ Continue", key=f"continue_{i}"):
+                            # TODO: POST continue_slide action
+                            st.info("Generating next slide...")
+        else:
+            st.info("Generate outline first")
+    
+    with tab3:
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📥 Generate PPT", use_container_width=True):
+                # Backend already generates PPT file
+                st.success("✅ PPT generated! Check backend folder or add download endpoint")
+        with col2:
+            st.info("📂 File saved on server")
 
-    return checkpointer, graph
+else:
+    # Welcome screen
+    st.title("Welcome to Ritey PPT")
+    st.markdown("""
+    **Build Easy, Build Fast, Build Smart**
+    
+    1. Click **"✨ New PPT"** in sidebar
+    2. Enter topic & slide count  
+    3. Review AI-generated outline
+    4. Refine slides with feedback
+    5. Download your PPT!
+    """)

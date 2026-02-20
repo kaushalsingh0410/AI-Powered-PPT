@@ -1,22 +1,59 @@
 import streamlit as st
-import uuid
 from datetime import datetime
-from dotenv import load_dotenv
 import requests
 import os
+import json
+from dotenv import load_dotenv
+from streamlit_logger import setup_streamlit_logger
+logger = setup_streamlit_logger()
+
 load_dotenv()
 API_URL = os.getenv('API_URL')
 
 # Page config
 st.set_page_config(page_title="Ritey PPT", layout="wide")
+# logger.info("Streamlit App Started")
 
-# Initialize session state
-if "sessions" not in st.session_state:
-    st.session_state.sessions = []
-if "current_session" not in st.session_state:
-    st.session_state.current_session = None
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = None
 if "show_form" not in st.session_state:
     st.session_state.show_form = False
+if "topic" not in st.session_state:
+    st.session_state.topic = False
+if "num_slide" not in st.session_state:
+    st.session_state.num_slide = False
+if "state" not in st.session_state:
+    st.session_state.state = False
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = 0
+
+
+
+
+# ============ API Function ===============
+def get_session_from_backend():
+    """Fetch all session or state or thread form backen checkpointer"""
+    try:
+        response = requests.get(f'{API_URL}/threads/')
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        logger.error('This is get_session_from_backend %s',e)
+        return []
+    
+def get_session_state(thread_id):
+    try:
+        response = requests.get(f'{API_URL}/threads/{thread_id}')
+        if response.status_code == 200:
+            data = response.json()
+            # return {"outline":data.get('outline',{}),
+            #         "detailed_slides":data.get('detailed_slides',[])
+            #         }
+            return data
+    except Exception as e:
+        logger.error('get_session_state error %s',e)
+        return None
+
 
 # ============ SIDEBAR ============
 with st.sidebar:
@@ -29,33 +66,19 @@ with st.sidebar:
     st.divider()
     
     # Display existing sessions
-    if st.session_state.sessions:
+    sessions = get_session_from_backend()
+    if sessions:
         st.markdown("**Recent Sessions**")
-        
-        for idx, session in enumerate(st.session_state.sessions):
-            col1, col2 = st.columns([0.85, 0.15])
+        for idx, session in enumerate(sessions):
+            if st.button(
+                f" {session['topic'][:30].capitalize()}...",
+                key=f"session_{idx}",
+                use_container_width=True,
+            ):
+                st.session_state.thread_id = session['thread_id']
+                st.session_state.show_form = False
+                st.rerun()
             
-            with col1:
-                # Click to switch session
-                if st.button(
-                    f" {session['topic'][:20].capitalize()}...",
-                    key=f"session_{idx}",
-                    use_container_width=True,
-                ):
-                    st.session_state.current_session = idx
-                    st.session_state.show_form = False
-                    st.rerun()
-                
-                # Display metadata
-                st.caption(f"🔹 {session['num_slides']} slides • {session['created_at']}")
-            
-            with col2:
-                # Delete button
-                if st.button("🗑️", key=f"delete_{idx}", help="Delete session"):
-                    st.session_state.sessions.pop(idx)
-                    if st.session_state.current_session == idx:
-                        st.session_state.current_session = None
-                    st.rerun()
     else:
         st.info("📭 No sessions yet. Create your first PPT!")
 
@@ -86,87 +109,133 @@ if st.session_state.show_form:
             )
         
         submitted = st.form_submit_button("✅ Create Presentation", use_container_width=True)
-        
         if submitted and topic and num_slides:
-            # Generate UUID for checkpoint
-            thread_id = str(uuid.uuid4())
-            
-            # Create session
-            new_session = {
-                "id": thread_id,
-                "topic": topic,
-                "num_slides": num_slides,
-                "created_at": datetime.now().strftime("%b %d, %H:%M"),
-                "status": "outline_generated",
-                "outline": None,
-                "detailed_slides": [],
-            }
-            
-            # Add to sessions and set as current
-            st.session_state.sessions.insert(0, new_session)
-            st.session_state.current_session = 0
+            thread = requests.post(f'{API_URL}/threads/',json={"topic":topic})
+            thread = thread.json()
+            thread_id = thread['thread_id']
+            st.session_state.thread_id = thread_id
+            st.session_state.topic = topic
+            st.session_state.num_slide = num_slides
             st.session_state.show_form = False
-            
-            # Show success message
+            st.session_state.active_tab = 0
             st.success(f"✨ Session created! Thread ID: `{thread_id}`")
             st.info(f"📋 Topic: **{topic}** | Slides: **{num_slides}**")
             
             st.rerun()
 
 # Show current session
-elif st.session_state.current_session is not None:
-    session = st.session_state.sessions[st.session_state.current_session]
+elif st.session_state.thread_id is not None:
+
+    if st.session_state.topic and st.session_state.num_slide:
+        state = {
+            "topic": st.session_state.topic,
+            "num_slide": st.session_state.num_slide,
+            "thread_id": st.session_state.thread_id,
+                }
+        state = requests.post(f'{API_URL}/states/',json=state)
+        st.session_state.num_slide = False
+        st.session_state.topic = False
+        state = state.json()
+        st.session_state.state = state
+        
     
-    st.title(f"🎯 {session['topic']}")
-    
-    # Session info
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Slides", session['num_slides'])
-    col2.metric("Thread ID", session['id'][:8] + "...")
-    col3.metric("Created", session['created_at'])
-    col4.metric("Status", session['status'])
+    session = get_session_state(st.session_state.thread_id)
+    print('st.session_state.thread_id',st.session_state.thread_id)
+    print('session',session)
+
+    last_update = session['thread']['last_update']
+    topic = session.get('thread',{'topic':'No Title'}).get('topic','No Title')
+    st.title(f"🎯 {topic}")
     
     st.divider()
     
-    # Tabs for workflow
-    tab1, tab2, tab3 = st.tabs(["📊 Outline", "🎨 Slides", "📥 Download"])
-    
-    with tab1:
+    # tab1, tab2, tab3 = st.tabs(["📊 Outline", "🎨 Slides", "📥 Download"])
+    tab_names = ["📊 Outline", "🎨 Slides", "📥 Download"]
+
+    selected_tab = st.radio(
+        "Navigation",
+        tab_names,
+        index=st.session_state.active_tab,
+        horizontal=True
+    )
+
+    st.session_state.active_tab = tab_names.index(selected_tab)
+ 
+    # with tab1:
+    if selected_tab == "📊 Outline":
         st.subheader("Presentation Outline")
         if session['outline']:
             st.json(session['outline'])
-        else:
-            st.info("Click 'Generate Outline' to create your outline")
-            if st.button("🚀 Generate Outline"):
-                st.warning("🔄 Generating outline... (Connected to backend)")
-                # TODO: Call /api/outline endpoint with:
-                # {
-                #     "topic": session['topic'],
-                #     "num_slide": session['num_slides'],
-                #     "thread_id": session['id']
-                # }
+            # if "__interrupt__" in st.session_state.state:
+            if int(last_update) == 1:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button('Continue to slide'):
+                        state = {"action":"continue_slide","thread_id":st.session_state.thread_id,'last_update':'2'}
+                        state = requests.post(f'{API_URL}/states/',json=state)
+                        st.session_state.active_tab = 1
+                        st.rerun()
+
+                with col2:
+                    feedback = st.text_input("Enter your feedback")
+                    if st.button("Submit Feedback"):
+                        state = {"action": "update_outline", "feedback": feedback,"thread_id":st.session_state.thread_id}
+                        state = requests.post(f'{API_URL}/states/', json=state)
+                        st.rerun()
     
-    with tab2:
+    # with tab2:
+    elif selected_tab == "🎨 Slides":
         st.subheader("Slide Details")
         if session['detailed_slides']:
             for idx, slide in enumerate(session['detailed_slides']):
-                with st.expander(f"Slide {idx + 1}: {slide.get('title', 'Untitled')}"):
+                with st.expander(f"Slide {idx + 1}: {slide.get('slide_title', 'Untitled')}"):
                     st.write(slide)
-        else:
-            st.info("Generate outline first, then create slide details")
-    
-    with tab3:
-        st.subheader("Download Presentation")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("📥 Generate PPT", use_container_width=True):
-                st.warning("🔄 Generating PowerPoint... (Connected to backend)")
-                # TODO: Call /ppt endpoint with: {"thread_id": session['id']}
-        
-        with col2:
-            st.button("📂 Open Folder", use_container_width=True, disabled=True)
+        if int(last_update) == 2:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button('Next'):
+                        state = {"action":"continue_slide","thread_id":st.session_state.thread_id}
+                        state = requests.post(f'{API_URL}/states/',json=state)
+                        # print(state.json())
+                        st.session_state.active_tab = 1
+                        st.rerun()
 
+                with col2:
+                    feedback = st.text_input("Enter your feedback")
+                    if st.button("Submit Feedback"):
+                        state = {"action": "update_slide", "feedback": feedback,"thread_id":st.session_state.thread_id}
+                        state = requests.post(f'{API_URL}/states/', json=state)
+                        st.rerun()
+    
+    # with tab3:
+        # if int(last_update) == 3 and session['thread']['img_path'] is None:
+    
+    elif selected_tab == "📥 Download":
+        st.subheader("Download Presentation")
+        if int(last_update) == 3 and session['thread']['img_path'] is None:
+            if st.button("📥 Generate & Download  PPT", use_container_width=True):
+                st.warning("🔄 Generating PowerPoint... (Connected to backend)")
+                res = requests.post(f'{API_URL}/ppt/', json={"thread_id": st.session_state.thread_id})
+                st.rerun()
+                # if res.status_code == 200:
+                #     st.success("PPT generated. Refreshing...")
+                    
+                #     st.download_button(
+                #     label="⬇️ Click here to Download PPT",
+                #     data=res.content,
+                #     file_name=session['thread']['topic'],
+                #     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                # )
+        # print("session['thread']['img_path']",session['thread']['img_path'])
+        # print("type",type(session['thread']['img_path']))
+        if session['thread']['img_path']:
+            st.download_button(
+                    label="⬇️ Click here to Download PPT",
+                    data=requests.post(f'{API_URL}/ppt/', json={"thread_id": st.session_state.thread_id}).content,
+                    file_name=session['thread']['topic']+'.pptx',
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                )
+            
 else:
     # Welcome screen
     st.title("Welcome to Ritey PPT")

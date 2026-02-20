@@ -8,6 +8,7 @@ class Thread(Base):
 
     thread_id = Column(String, primary_key = True,index = True)
     topic = Column(String,nullable= False)
-    created_at = Column(DateTime,server_default=func.now())
     last_update = Column(String,nullable= False,server_default='update')
+    img_path = Column(String, nullable=True)
+    created_at = Column(DateTime,server_default=func.now())
     updated_at = Column(DateTime,server_default=func.now(),onupdate=datetime.utcnow)

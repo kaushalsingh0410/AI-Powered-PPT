@@ -236,7 +236,7 @@ def generate_slide_detail_node(state: PptState):
     }
 
     if state['action'] == "update_slide":
-        feedback = state['action']
+        feedback = state['feedback']
         last_slide = detailed_slides.pop()
         last_outline = outline['slides'][current_index-1]
         output['feedback'] = ''

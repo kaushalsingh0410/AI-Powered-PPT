@@ -25,5 +25,5 @@ class ThreadResponse(BaseModel):
 class ThreadWithStateResponse(BaseModel):
     thread: ThreadResponse
     # state: List[BaseMessage]
-    outline: Dict
+    outline: List
     detailed_slides: List[Dict]

@@ -4,5 +4,5 @@ alembic---
     alembic init alembic
 
 
-alembic revision --autogenerate -m "add last update"
+alembic revision --autogenerate -m "add num_slide"
 alembic upgrade head

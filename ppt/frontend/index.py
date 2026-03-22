@@ -46,9 +46,7 @@ def get_session_state(thread_id):
         response = requests.get(f'{API_URL}/threads/{thread_id}')
         if response.status_code == 200:
             data = response.json()
-            # return {"outline":data.get('outline',{}),
-            #         "detailed_slides":data.get('detailed_slides',[])
-            #         }
+
             return data
     except Exception as e:
         logger.error('get_session_state error %s',e)
@@ -77,6 +75,8 @@ with st.sidebar:
             ):
                 st.session_state.thread_id = session['thread_id']
                 st.session_state.show_form = False
+                st.session_state.topic = session['topic'] 
+                st.session_state.num_slide = False
                 st.rerun()
             
     else:
@@ -101,16 +101,24 @@ if st.session_state.show_form:
         with col2:
             num_slides = st.number_input(
                 "🔢 Number of Slides",
-                min_value=3,
-                max_value=50,
-                value=5,
                 step=1,
                 help="How many slides do you want?"
             )
         
         submitted = st.form_submit_button("✅ Create Presentation", use_container_width=True)
-        if submitted and topic and num_slides:
-            thread = requests.post(f'{API_URL}/threads/',json={"topic":topic})
+        if submitted:
+            if not topic.strip():
+                st.error("⚠️ Please enter a presentation topic.")
+                st.stop()
+            if num_slides > 5:
+                st.error("⚠️ This app uses a free API, so you can generate a maximum of 5 slides only.")
+                st.stop()
+            
+            if num_slides < 3:
+                st.error("⚠️ Please select at least 3 slide.")
+                st.stop()
+
+            thread = requests.post(f'{API_URL}/threads/',json={"topic":topic,"num_slide":num_slides})
             thread = thread.json()
             thread_id = thread['thread_id']
             st.session_state.thread_id = thread_id
@@ -120,7 +128,6 @@ if st.session_state.show_form:
             st.session_state.active_tab = 0
             st.success(f"✨ Session created! Thread ID: `{thread_id}`")
             st.info(f"📋 Topic: **{topic}** | Slides: **{num_slides}**")
-            
             st.rerun()
 
 # Show current session
@@ -138,104 +145,49 @@ elif st.session_state.thread_id is not None:
         state = state.json()
         st.session_state.state = state
         
-    
+    # st.subheader(st.session_state.topic)
     session = get_session_state(st.session_state.thread_id)
-    print('st.session_state.thread_id',st.session_state.thread_id)
-    print('session',session)
 
-    last_update = session['thread']['last_update']
-    topic = session.get('thread',{'topic':'No Title'}).get('topic','No Title')
-    st.title(f"🎯 {topic}")
-    
-    st.divider()
-    
-    # tab1, tab2, tab3 = st.tabs(["📊 Outline", "🎨 Slides", "📥 Download"])
-    tab_names = ["📊 Outline", "🎨 Slides", "📥 Download"]
+    # kaushal 
+    if session:
 
-    selected_tab = st.radio(
-        "Navigation",
-        tab_names,
-        index=st.session_state.active_tab,
-        horizontal=True
-    )
-
-    st.session_state.active_tab = tab_names.index(selected_tab)
- 
-    # with tab1:
-    if selected_tab == "📊 Outline":
+        topic = (session.get('thread')or {'topic':'No Title'}).get('topic','No Title')
+        
+        
+        st.title(f"🎯 {topic}")
+        
         st.subheader("Presentation Outline")
         if session['outline']:
             st.json(session['outline'])
-            # if "__interrupt__" in st.session_state.state:
-            if int(last_update) == 1:
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button('Continue to slide'):
-                        state = {"action":"continue_slide","thread_id":st.session_state.thread_id,'last_update':'2'}
-                        state = requests.post(f'{API_URL}/states/',json=state)
-                        st.session_state.active_tab = 1
-                        st.rerun()
 
-                with col2:
-                    feedback = st.text_input("Enter your feedback")
-                    if st.button("Submit Feedback"):
-                        state = {"action": "update_outline", "feedback": feedback,"thread_id":st.session_state.thread_id}
-                        state = requests.post(f'{API_URL}/states/', json=state)
-                        st.rerun()
-    
-    # with tab2:
-    elif selected_tab == "🎨 Slides":
-        st.subheader("Slide Details")
-        if session['detailed_slides']:
-            for idx, slide in enumerate(session['detailed_slides']):
-                with st.expander(f"Slide {idx + 1}: {slide.get('slide_title', 'Untitled')}"):
-                    st.write(slide)
-        if int(last_update) == 2:
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button('Next'):
+            if session['detailed_slides']:
+                st.subheader("Slide Details")
+                for idx, slide in enumerate(session['detailed_slides']):
+                    with st.expander(f"Slide {idx + 1}: {slide.get('slide_title', 'Untitled')}"):
+                        st.write(slide)
+                
+                st.subheader("Download Presentation")
+                st.download_button(
+                        label="⬇️ Click here to Download PPT",
+                        data=requests.post(f'{API_URL}/ppt/', json={"thread_id": st.session_state.thread_id}).content,
+                        file_name=session['thread']['topic']+'.pptx',
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    )
+            else:
+                if st.button('Continue to slide'):
+                    with st.spinner('Generating slides... Please wait ⏳'):
                         state = {"action":"continue_slide","thread_id":st.session_state.thread_id}
-                        state = requests.post(f'{API_URL}/states/',json=state)
-                        # print(state.json())
-                        st.session_state.active_tab = 1
-                        st.rerun()
-
-                with col2:
-                    feedback = st.text_input("Enter your feedback")
-                    if st.button("Submit Feedback"):
-                        state = {"action": "update_slide", "feedback": feedback,"thread_id":st.session_state.thread_id}
-                        state = requests.post(f'{API_URL}/states/', json=state)
-                        st.rerun()
-    
-    # with tab3:
-        # if int(last_update) == 3 and session['thread']['img_path'] is None:
-    
-    elif selected_tab == "📥 Download":
-        st.subheader("Download Presentation")
-        if int(last_update) == 3 and session['thread']['img_path'] is None:
-            if st.button("📥 Generate & Download  PPT", use_container_width=True):
-                st.warning("🔄 Generating PowerPoint... (Connected to backend)")
-                res = requests.post(f'{API_URL}/ppt/', json={"thread_id": st.session_state.thread_id})
-                st.rerun()
-                # if res.status_code == 200:
-                #     st.success("PPT generated. Refreshing...")
-                    
-                #     st.download_button(
-                #     label="⬇️ Click here to Download PPT",
-                #     data=res.content,
-                #     file_name=session['thread']['topic'],
-                #     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                # )
-        # print("session['thread']['img_path']",session['thread']['img_path'])
-        # print("type",type(session['thread']['img_path']))
-        if session['thread']['img_path']:
-            st.download_button(
-                    label="⬇️ Click here to Download PPT",
-                    data=requests.post(f'{API_URL}/ppt/', json={"thread_id": st.session_state.thread_id}).content,
-                    file_name=session['thread']['topic']+'.pptx',
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                )
-            
+                        response = requests.post(f'{API_URL}/states/',json=state)
+                        if response.status_code == 429:
+                            error_detail = response.json().get('detail', {})
+                            wait_time = error_detail.get('wait_time', 'some time')
+                            st.error(f"⚠️ Groq daily token limit reached!")
+                            st.warning(f"⏳ Please try again in **{wait_time}** or next 24 hours..")
+                        else:
+                            st.rerun()
+                        
+    else:
+        st.subheader(f'No Presentation found for {st.session_state.topic}.')            
 else:
     # Welcome screen
     st.title("Welcome to Ritey PPT")

@@ -155,15 +155,17 @@ Feedback: {feedback}
 Slide: {current_slide}
 Topic: {state['topic']}
 
-If this slide needs current statistics, market data, or recent research, use the search tool first.
-For conceptual, instructional, or introductory slides, generate content directly without searching.
+Use this research:
+{research}
+
+Include 1–2 stats with source.
 """)
 
     messages = [DETAIL_SYSTEM_PROMPT, prompt]
 
-    result = model_with_tools.invoke(messages)
+    result = model.invoke(messages)
     usage = result.response_metadata.get("token_usage", {})
-    output["usage"] = usage
+
     
     if result.content:
         try:
@@ -171,7 +173,7 @@ For conceptual, instructional, or introductory slides, generate content directly
             detailed_slides.append(new_slide)
             output['detailed_slides'] = detailed_slides
             output['current_slide_index'] = current_index + 1
-            
+            output["usage"] = usage
         except json.JSONDecodeError:
             pass
     
@@ -182,17 +184,18 @@ For conceptual, instructional, or introductory slides, generate content directly
 
 
 # @traceable(name="Research Slide")
-# def research_slide_node(state: PptState):
-#     """Research current slide before content generation"""
-#     slide_title = state['outline'][state['current_slide_index']]
-#     research_query = f"{slide_title} statistics {datetime.now().year} research report"
-#     research_result = searchTool.invoke({"query": research_query})
+def research_slide_node(state: PptState):
+    # print('inside research_slide_node')
+    """Research current slide before content generation"""
+    slide_title = state['outline'][state['current_slide_index']]
+    research_query = f"{slide_title} statistics {datetime.now().year} research report"
+    research_result = searchTool.invoke({"query": research_query})
 
-#     return {
-#         "research_data": research_result[0]['content'],
-#         "messages": [ToolMessage(content=str(research_result), tool_call_id="research")],
-#         "tool_caller": "generate_slide_detail"
-#     }
+    return {
+        "research_data": research_result[0]['content'],
+        "messages": [ToolMessage(content=str(research_result), tool_call_id="research")],
+        "tool_caller": "generate_slide_detail"
+    }
 
 
 def route_after_tools(state: PptState):
@@ -230,7 +233,7 @@ def tools_condition(state: PptState):
 def build_workflow():
     workflow = StateGraph(PptState)
     workflow.add_node("generate_outline", generate_outline_node)
-    # workflow.add_node("research_slide", research_slide_node)
+    workflow.add_node("research_slide", research_slide_node)
     workflow.add_node("generate_slide_detail", generate_slide_detail_node)
     workflow.add_node("human_decision", human_decision)
     workflow.add_node("tools", ToolNode(tools))
@@ -251,26 +254,16 @@ def build_workflow():
         route_after_human,
         {
             "generate_outline": "generate_outline",
-            "generate_slide_detail": "generate_slide_detail",
+            "generate_slide_detail": "research_slide",
             END: END,
         },
     )
-    
-    # workflow.add_conditional_edges(
-    #     "human_decision",
-    #     route_after_human,
-    #     {
-    #         "generate_outline": "generate_outline",
-    #         "generate_slide_detail": "research_slide",
-    #         END: END,
-    #     },
-    # )
 
-    # workflow.add_conditional_edges(
-    #     "research_slide",
-    #     tools_condition,
-    #     {"tools": "tools", "__end__": "generate_slide_detail"},
-    # )
+    workflow.add_conditional_edges(
+        "research_slide",
+        tools_condition,
+        {"tools": "tools", "__end__": "generate_slide_detail"},
+    )
 
     workflow.add_conditional_edges(
         "generate_slide_detail",

@@ -1,0 +1,287 @@
+"""
+PowerPoint Presentation Generator from Python List Data
+Converts structured slide data into professional PPTX presentations
+"""
+
+import os
+import random
+from pptx import Presentation
+from pptx.util import Pt, Inches
+
+class PPTGenerator:
+    def __init__(self, output_filename="presentation.pptx",title='presentation.pptx'):
+        """Initialize the presentation generator"""
+        self.output_filename = output_filename
+        self.title = title
+
+        self.FONT_SIZES = {
+            'title': 44,     
+            'intro': 20,         
+            'bullets': 18,       
+            'sub_bullets': 16,   
+            'supporting': 16,    
+            'paragraphs': 16,   
+            'small_text': 14
+        }
+
+        template_folder = "../templates"
+
+        if os.path.exists(template_folder):
+            templates = [f for f in os.listdir(template_folder) if f.endswith(".pptx")]
+
+            if templates:
+                selected_template = random.choice(templates)
+                print(f"Using template: {selected_template}")
+                self.prs = Presentation(os.path.join(template_folder, selected_template))
+            else:
+                print("No templates found. Using default theme.")
+                self.prs = Presentation()
+        else:
+            print("Template folder not found. Using default theme.")
+            self.prs = Presentation()
+
+
+
+        
+    def add_title_slide(self, title, subtitle=""):
+        """Add a title slide to the presentation"""
+        slide_layout = self.prs.slide_layouts[0]  # Title slide layout
+        slide = self.prs.slides.add_slide(slide_layout)
+        
+        title_shape = slide.shapes.title
+        subtitle_shape = slide.placeholders[1]
+        
+        title_shape.text = title
+        subtitle_shape.text = subtitle
+
+        for paragraph in title_shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.size = Pt(self.FONT_SIZES["title"])
+                run.font.bold = True
+        
+        return slide
+    
+    def add_content_slide(self, slide_data):
+
+        layouts = self.prs.slide_layouts
+
+        if len(layouts) > 1:
+            layout = layouts[1]
+        else:
+            layout = layouts[0]
+
+        slide = self.prs.slides.add_slide(layout)
+
+        # ===== TITLE =====
+        title_text = slide_data.get("slide_title", "")
+        slide.shapes.title.text = title_text
+
+        for paragraph in slide.shapes.title.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.size = Pt(self.FONT_SIZES["title"])
+                run.font.bold = True
+
+        # ===== FIND BODY PLACEHOLDER =====
+
+        body_shape = None
+
+        for shape in slide.placeholders:
+            if shape.placeholder_format.type == 2:
+                body_shape = shape
+                break
+
+        if not body_shape:
+            try:
+                body_shape = slide.placeholders[1]
+            except:
+                print("No body placeholder found")
+                return slide
+
+        text_frame = body_shape.text_frame
+        text_frame.clear()
+        text_frame.word_wrap = True
+
+        # ===== INTRO LINE =====
+
+        intro = slide_data.get("intro_line")
+
+        if intro:
+            p = text_frame.paragraphs[0]
+            p.text = intro
+            p.level = 0
+            p.space_after = Pt(12)
+
+            for run in p.runs:
+                run.font.size = Pt(self.FONT_SIZES["intro"])
+                run.font.bold = False
+
+        # ===== BULLET POINTS =====
+
+        bullets = slide_data.get("bullet_points", [])
+
+        for bullet in bullets:
+            p = text_frame.add_paragraph()
+            p.text = bullet
+            p.level = 1
+            p.space_after = Pt(8)
+
+            for run in p.runs:
+                run.font.size = Pt(self.FONT_SIZES["bullets"])
+
+        # ===== SUPPORTING TEXT =====
+
+        supporting = slide_data.get("supporting_text")
+
+        if supporting:
+
+            p = text_frame.add_paragraph()
+            p.text = ""
+            p.space_after = Pt(6)
+
+            p = text_frame.add_paragraph()
+            p.text = supporting
+            p.level = 0
+            p.space_after = Pt(6)
+
+            for run in p.runs:
+                run.font.size = Pt(self.FONT_SIZES["supporting"])
+                run.font.italic = True
+
+        # ===== PARAGRAPHS =====
+
+        paragraphs = slide_data.get("paragraphs", [])
+
+        for para in paragraphs:
+
+            p = text_frame.add_paragraph()
+            p.text = para
+            p.level = 0
+            p.space_after = Pt(8)
+
+            for run in p.runs:
+                run.font.size = Pt(self.FONT_SIZES["paragraphs"])
+
+        return slide
+    
+    def generate_from_list(self, slides_data):
+
+        # Title slide
+        self.add_title_slide(self.title, "Generated by Ritey")
+
+        for slide in slides_data:
+            self.add_content_slide(slide)
+
+        # End slide
+        self.add_title_slide("Thank You!", "Questions?")
+    
+    def save(self):
+
+        self.prs.save(self.output_filename)
+
+        print(f"\n✅ Presentation saved as: {self.output_filename}")
+
+        print("\n📊 Font Sizes Used:")
+        for k, v in self.FONT_SIZES.items():
+            print(f"• {k}: {v}pt")
+
+        return self.output_filename
+
+data = [{'slide_number': 1,
+  'slide_title': 'Introduction to Global Warming',
+  'layout': 'bullets_with_text',
+  'intro_line': 'Global warming is a pressing issue that affects the planet and its inhabitants, with rising temperatures and associated climate change impacts.',
+  'bullet_points': ['25% of Americans are Alarmed about climate change (Source: Yale University and George Mason University, 2025)',
+   'The global average temperature for January 2026 was 0.14°C warmer than the average for January during 1981-2010 (Source: The Earth System Science Center at The University of Alabama in Huntsville, 2026)',
+   'The oceans absorbed energy equivalent to detonating nearly 10 Hiroshima atomic bombs in the oceans every second of every minute in 2025 (Source: NASA, 2025)'],
+  'supporting_text': 'According to the UN Environment Programme’s “The Emissions Gap Report 2025: Off Target”, full implementation of the targets for national reductions in greenhouse gas emissions put forward at the 2015 climate summit in Paris will allow global temperature to rise by 2.3 to 2.5 degrees Celsius this century.',
+  },
+ {'slide_number': 2,
+  'slide_title': 'Causes of Global Warming',
+  'layout': 'bullets_with_text',
+  'intro_line': 'According to the Potsdam Institute for Climate Impact Research (PIK), global warming has picked up speed in the past decade, with a clear acceleration in the planet’s long-term warming trend beginning around 2015.',
+  'bullet_points': ['60,000 heat-related deaths in the summer heatwave in Europe (Source: 2026 Doomsday Clock Statement)',
+   '3.6 billion people face inadequate access to water at least one month per year (Source: UN, 2026)',
+   '90% of the heat added by climate change is absorbed by the oceans (Source: 2026 Doomsday Clock Statement)'],
+  'supporting_text': 'The past dozen years have been the 12 warmest on record, especially the past three, which were all more than 1.4°C hotter than preindustrial temperatures, according to NASA data analyzed by Dana Nuccitelli.',
+  },
+ {'slide_number': 3,
+  'slide_title': 'Solutions to Global Warming',
+  'layout': 'bullets',
+  'intro_line': "According to Science, thirty-six solutions can stabilize Earth's climate, including reducing greenhouse gas emissions and transitioning to clean energy.",
+  'bullet_points': ['6.5 million tons of CO2 emissions reduced annually through renewable energy sources (Source: Science 2026)',
+   '59% of registered voters prefer candidates who support action on global warming (Source: Yale Program on Climate Change Communication 2026)',
+   'China aims to dominate the clean energy transition, with a projected $6 trillion investment in low-carbon solutions (Source: Yale Climate Connections 2026)'],
+  'supporting_text': 'These solutions can help mitigate the effects of global warming, which is projected to increase by 1.5 degrees Celsius by 2050 if left unaddressed (Source: Greenly 2026)',
+  }]
+
+ppt = PPTGenerator(
+    output_filename="plastic_pollution.pptx",
+    title="Plastic Pollution"
+)
+
+ppt.generate_from_list()
+
+ppt.save()
+
+
+
+
+# # Example usage with your data
+# if __name__ == "__main__":
+    
+#     # Your slide data
+#     slides_data = [
+#         {
+#             "slide_number": 1,
+#             "slide_title": "Introduction to React",
+#             "detailed_content": [
+#                 {
+#                     "key_point": "React is a powerful JavaScript library designed specifically for building user interfaces, allowing developers to create interactive web applications efficiently.",
+#                     "explanation": "Created by Facebook (now Meta) in 2013, React revolutionized web development by introducing a component-based architecture that promotes reusability and scalability. It is widely adopted for dynamic web apps because it enables developers to update parts of a page without reloading the entire site.",
+#                     "example": "For instance, companies like Netflix, Airbnb, and Walmart use React to manage complex user interfaces with hundreds of interactive components.",
+#                     "statistic": "According to Stack Overflow's 2023 Developer Survey, React is among the top 3 most-used web frameworks globally, with over 40% of developers reporting its use in their projects."
+#                 }
+#             ]
+#         },
+#         {
+#             "slide_number": 2,
+#             "slide_title": "Core Concepts and Features",
+#             "detailed_content": [
+#                 {
+#                     "key_point": "Component-based architecture allows developers to break down applications into reusable, modular pieces, improving code maintainability and scalability.",
+#                     "additional_info": "For example, a login form component can be reused across multiple pages without rewriting the code. This modularity is widely adopted in frameworks like React and Vue, where components encapsulate both logic and UI."
+#                 },
+#                 {
+#                     "key_point": "The Virtual DOM enhances performance by creating a lightweight copy of the actual DOM.",
+#                     "additional_info": "When changes occur, it calculates the minimal updates needed and applies them efficiently, reducing lag and resource usage. Studies show this can improve rendering speed by up to 50% compared to direct DOM manipulation."
+#                 },
+#                 {
+#                     "key_point": "JSX syntax bridges the gap between HTML and JavaScript by allowing developers to write HTML-like code directly within JavaScript.",
+#                     "additional_info": "For instance, a button element can be defined as <button>Submit</button> without switching languages. JSX is processed by transpilers like Babel into standard JavaScript."
+#                 }
+#             ]
+#         },
+#         {
+#             "slide_number": 3,
+#             "slide_title": "Use Cases and Ecosystem",
+#             "detailed_content": [
+#                 {
+#                     "key_point": "Enterprise applications favor this technology due to its scalability and maintainability.",
+#                     "additional_info": "It makes it ideal for large-scale projects where long-term sustainability and adaptability are critical. Companies like Airbnb and Netflix have leveraged similar ecosystems to manage complex user interfaces."
+#                 },
+#                 {
+#                     "key_point": "Integration with popular front-end tools like Redux, React Router, and Next.js enhances developer productivity.",
+#                     "additional_info": "Redux alone is used in over 60% of React projects according to recent surveys. These tools handle state management, navigation, and server-side rendering."
+#                 },
+#                 {
+#                     "key_point": "A strong community and extensive documentation solidify its value.",
+#                     "additional_info": "Developers have access to tutorials, forums, and open-source libraries that accelerate onboarding. Over 1.2 million repositories on GitHub reference React technology."
+#                 }
+#             ]
+#         }
+#     ]
+    
+#     # Create and generate presentation
+#     generator = PPTGenerator("React_Presentation.pptx")
+#     generator.generate_from_list(slides_data)
+#     generator.save()

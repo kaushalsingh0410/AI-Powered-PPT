@@ -1,10 +1,11 @@
 import ast
 from datetime import datetime
+from langchain_ai21.chat_models import ChatAI21
 from langchain_groq import ChatGroq
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import SystemMessage,BaseMessage,HumanMessage,ToolMessage
-from langgraph.types import interrupt
+from langgraph.types import interrupt,Command
 from langgraph.graph import StateGraph,START,END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -51,7 +52,8 @@ class DetailedSlideOutput(BaseModel):
     paragraphs: Optional[List[str]] = None
 
 model = ChatGroq(model="llama-3.3-70b-versatile")
-searchTool = TavilySearchResults(max_results=1)
+# model = ChatAI21(model="jamba-mini-2-2026-01")
+searchTool = TavilySearchResults(max_results=2)
 tools = [searchTool]
 model_with_tools = model.bind_tools(tools)
 detailed_parser = PydanticOutputParser(pydantic_object= DetailedSlideOutput)
@@ -73,19 +75,22 @@ Strict Rules:
 - Return a Python list of strings.
 - No explanations.
 """)
-DETAIL_SYSTEM_PROMPT = SystemMessage(content="""
-Generate slide content in JSON.
+DETAIL_SYSTEM_PROMPT = SystemMessage(content=f"""
+You are a professional presentation designer.
 
-Format:
-{
-  "slide_number": number,
-  "slide_title": "string",
-  "layout": "bullets | bullets_with_text | paragraph | mixed",
-  "intro_line": "string (optional)",
-  "bullet_points": ["string"] (optional),
-  "supporting_text": "string (optional)",
-  "paragraphs": ["string"] (optional)
-}
+Your job is to generate visually balanced slide content for a PowerPoint presentation.
+
+For each slide choose the most appropriate layout or a mix of layouts  and generate structured content.
+
+Available layouts:
+- bullets
+- bullets_with_text
+- paragraph
+- mixed
+
+
+{detailed_parser.get_format_instructions()}
+
 
 Rules:
 - Slides should be informative but not crowded.
@@ -93,7 +98,7 @@ Rules:
 - Use clear, short content (120-150 words)
 - Bullet points: 5–7 items, short phrases
 - Keep slide visually balanced
-- No explanation, JSON only
+Return JSON only.
 """)
 
 
@@ -114,8 +119,8 @@ def generate_outline_node(state: PptState):
     if result.content:
         try:
             # print('result.content',result.content)
-            # print('ast.literal_eval(result.content)',ast.literal_eval(result.content))
-            output['outline'] = ast.literal_eval(result.content)
+            output['outline'] = json.loads(result.content)
+            
         except json.JSONDecodeError as e:
             print('generate_outline_node',e)
     return output
@@ -123,7 +128,7 @@ def generate_outline_node(state: PptState):
 @traceable(name="Generate Slide Detail")
 def generate_slide_detail_node(state: PptState):
     """Generate detailed content using research data"""
-    # print('inside generate_slide_detail_node')
+    # print('state',state['messages'])
     outline = state['outline']
     current_index = state['current_slide_index']
     detailed_slides = state.get('detailed_slides', [])
@@ -139,8 +144,10 @@ def generate_slide_detail_node(state: PptState):
         "current_slide_index": current_index
     }
     
+    
+
+    
     if state['action'] == "update_slide":
-        # Handle feedback case (existing logic)
         feedback = state['feedback']
         last_slide = detailed_slides.pop()
         prompt = HumanMessage(content=f"""
@@ -149,21 +156,45 @@ Research: {research}
 Current Content: {last_slide}
 Feedback: {feedback}
         """)
+        messages = [DETAIL_SYSTEM_PROMPT, prompt]  
+        output['messages'] = messages
+
+
+
     else:
 
         prompt = HumanMessage(content=f"""
 Slide: {current_slide}
 Topic: {state['topic']}
 
-If this slide needs current statistics, market data, or recent research, use the search tool first.
+If this slide needs current statistics, market data, or recent research, use the search tool first and get data till current {datetime.now().year} year.
 For conceptual, instructional, or introductory slides, generate content directly without searching.
 """)
+        messages = [DETAIL_SYSTEM_PROMPT, prompt]
+        output['messages'] = messages
 
-    messages = [DETAIL_SYSTEM_PROMPT, prompt]
+
+        last_message = state["messages"][-1] if state["messages"] else None
+        # print('last_message',last_message)
+        resuming_from_tool = (
+            last_message is not None and 
+            last_message.type == "tool"  # ToolMessage means search just completed
+        )
+
+        # print('resuming_from_tool',resuming_from_tool)
+
+        if resuming_from_tool:
+            # Pass full history so model sees its own search results and can now generate
+            messages = messages + state["messages"][-2:] 
+        # print('messages',messages)
+        
+    # print("\n\n\n\nmessages",messages)
 
     result = model_with_tools.invoke(messages)
-    usage = result.response_metadata.get("token_usage", {})
-    output["usage"] = usage
+    # print("\n\n\n\nresult",result)
+
+    # usage = result.response_metadata.get("token_usage", {})
+    # output["usage"] = usage
     
     if result.content:
         try:
@@ -172,27 +203,17 @@ For conceptual, instructional, or introductory slides, generate content directly
             output['detailed_slides'] = detailed_slides
             output['current_slide_index'] = current_index + 1
             
-        except json.JSONDecodeError:
-            pass
+        except Exception as e:
+            print('error',e)
     
     if output['current_slide_index'] == total_slides:
         output["action"] = "complete"
-    output['messages'] = [result]
+    # output["action"] = "complete"
+    # print("output['messages']",output['messages'])
+    output['messages'].append(result)
+    # print('after append',output['messages'])
     return output
 
-
-# @traceable(name="Research Slide")
-# def research_slide_node(state: PptState):
-#     """Research current slide before content generation"""
-#     slide_title = state['outline'][state['current_slide_index']]
-#     research_query = f"{slide_title} statistics {datetime.now().year} research report"
-#     research_result = searchTool.invoke({"query": research_query})
-
-#     return {
-#         "research_data": research_result[0]['content'],
-#         "messages": [ToolMessage(content=str(research_result), tool_call_id="research")],
-#         "tool_caller": "generate_slide_detail"
-#     }
 
 
 def route_after_tools(state: PptState):
@@ -256,21 +277,7 @@ def build_workflow():
         },
     )
     
-    # workflow.add_conditional_edges(
-    #     "human_decision",
-    #     route_after_human,
-    #     {
-    #         "generate_outline": "generate_outline",
-    #         "generate_slide_detail": "research_slide",
-    #         END: END,
-    #     },
-    # )
-
-    # workflow.add_conditional_edges(
-    #     "research_slide",
-    #     tools_condition,
-    #     {"tools": "tools", "__end__": "generate_slide_detail"},
-    # )
+    
 
     workflow.add_conditional_edges(
         "generate_slide_detail",
